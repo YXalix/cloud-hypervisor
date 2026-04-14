@@ -2634,6 +2634,8 @@ pub enum MemoryRestoreMode {
     Copy,
     /// Restore lazily by faulting snapshot pages into guest RAM on demand.
     OnDemand,
+    /// Restore by mmapping the snapshot file with MAP_PRIVATE for page cache sharing.
+    Mmap,
 }
 
 #[derive(Debug, Error)]
@@ -2649,6 +2651,7 @@ impl FromStr for MemoryRestoreMode {
         match s.to_lowercase().as_str() {
             "copy" => Ok(Self::Copy),
             "ondemand" => Ok(Self::OnDemand),
+            "mmap" => Ok(Self::Mmap),
             _ => Err(MemoryRestoreModeParseError::InvalidValue(s.to_owned())),
         }
     }
@@ -2669,11 +2672,12 @@ pub struct RestoreConfig {
 
 impl RestoreConfig {
     pub const SYNTAX: &'static str = "Restore from a VM snapshot. \
-        \nRestore parameters \"source_url=<source_url>,prefault=on|off,memory_restore_mode=copy|ondemand,\
+        \nRestore parameters \"source_url=<source_url>,prefault=on|off,memory_restore_mode=copy|ondemand|mmap,\
         net_fds=<list_of_net_ids_with_their_associated_fds>,resume=true|false\" \
         \n`source_url` should be a valid URL (e.g file:///foo/bar or tcp://192.168.1.10/foo) \
         \n`prefault` controls eager prefaulting for the copy-based restore path (disabled by default) \
         \n`memory_restore_mode=copy` preserves the existing eager read-copy restore behavior, while `memory_restore_mode=ondemand` enables lazy demand paging and fails restore if userfaultfd support is unavailable \
+        \n`memory_restore_mode=mmap` maps the snapshot file directly with MAP_PRIVATE for page cache sharing across VMs \
         \n`net_fds` is a list of net ids with new file descriptors. \
         Only net devices backed by FDs directly are needed as input.\
         \n `resume` controls whether the VM will be directly resumed after restore ";
@@ -2733,6 +2737,9 @@ impl RestoreConfig {
     // number of FDs.
     pub fn validate(&self, vm_config: &VmConfig) -> ValidationResult<()> {
         if self.memory_restore_mode == MemoryRestoreMode::OnDemand && self.prefault {
+            return Err(ValidationError::InvalidRestorePrefaultWithOnDemand);
+        }
+        if self.memory_restore_mode == MemoryRestoreMode::Mmap && self.prefault {
             return Err(ValidationError::InvalidRestorePrefaultWithOnDemand);
         }
 

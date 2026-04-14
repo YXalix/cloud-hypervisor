@@ -378,6 +378,10 @@ pub enum Error {
     #[error("Error copying snapshot into region")]
     SnapshotCopy(#[source] GuestMemoryError),
 
+    /// Error mmapping snapshot file for restore
+    #[error("Error mmapping snapshot file for restore")]
+    MmapRestore(#[source] io::Error),
+
     /// Failed to allocate MMIO address
     #[error("Failed to allocate MMIO address")]
     AllocateMmioAddress,
@@ -989,6 +993,84 @@ impl MemoryManager {
         });
 
         info!("UFFD restore: demand-paged restore enabled");
+
+        Ok(())
+    }
+
+    /// Restore guest memory by mmapping the snapshot file with MAP_PRIVATE.
+    ///
+    /// Instead of copying data from the snapshot file into anonymous guest RAM
+    /// (Copy mode) or using userfaultfd for lazy demand paging (OnDemand mode),
+    /// this directly maps the snapshot file into the guest RAM address space
+    /// using mmap(MAP_FIXED | MAP_PRIVATE).
+    ///
+    /// Benefits:
+    /// - Zero-copy restore: no data is read into guest RAM at restore time
+    /// - Page cache sharing: multiple VMs restoring from the same snapshot file
+    ///   share physical pages via the Linux page cache
+    /// - COW isolation: writes trigger wp_page_copy, creating private pages
+    /// - On-demand loading: filemap_fault loads pages from the file on first access
+    fn mmap_saved_regions(
+        &mut self,
+        file_path: PathBuf,
+        saved_regions: &MemoryRangeTable,
+    ) -> Result<(), Error> {
+        if saved_regions.is_empty() {
+            return Ok(());
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&file_path)
+            .map_err(Error::SnapshotOpen)?;
+
+        let guest_memory = self.guest_memory.memory();
+        let mut file_offset: u64 = 0;
+
+        for range in saved_regions.regions() {
+            let host_addr = guest_memory
+                .get_host_address(GuestAddress(range.gpa))
+                .map_err(|_| Error::GuestMemory(
+                    vm_memory::GuestMemoryError::InvalidGuestAddress(GuestAddress(range.gpa)),
+                ))?;
+
+            // SAFETY: mmap with MAP_FIXED replaces the existing anonymous VMA
+            // at [host_addr, host_addr + range.length) with a file-backed VMA
+            // backed by the snapshot file. The file_offset is page-aligned
+            // because all range lengths are page-aligned (derived from guest
+            // memory regions). The host_addr is page-aligned because it comes
+            // from a previous mmap. MAP_PRIVATE provides COW semantics.
+            let ret = unsafe {
+                libc::mmap(
+                    host_addr as *mut libc::c_void,
+                    range.length as usize,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_FIXED | libc::MAP_PRIVATE,
+                    file.as_raw_fd(),
+                    file_offset as libc::off_t,
+                )
+            };
+
+            if ret == libc::MAP_FAILED {
+                return Err(Error::MmapRestore(io::Error::last_os_error()));
+            }
+
+            info!(
+                "Mmap restore: mapped GPA 0x{:x} (len=0x{:x}) from file offset 0x{:x} at host {:p}",
+                range.gpa,
+                range.length,
+                file_offset,
+                host_addr,
+            );
+
+            file_offset += range.length;
+        }
+
+        info!(
+            "Mmap restore: mapped {} region(s) from {:?}",
+            saved_regions.regions().len(),
+            file_path,
+        );
 
         Ok(())
     }
@@ -1707,6 +1789,10 @@ impl MemoryManager {
                     &mem_snapshot.memory_ranges,
                     exit_evt,
                 )?;
+            } else if memory_restore_mode == MemoryRestoreMode::Mmap {
+                mm.lock()
+                    .unwrap()
+                    .mmap_saved_regions(memory_file_path, &mem_snapshot.memory_ranges)?;
             } else {
                 mm.lock()
                     .unwrap()
