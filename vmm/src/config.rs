@@ -2664,6 +2664,10 @@ pub struct RestoreConfig {
     pub prefault: bool,
     #[serde(default)]
     pub memory_restore_mode: MemoryRestoreMode,
+    /// When memory_restore_mode is Mmap, specifies the file to mmap from
+    /// instead of the snapshot's memory-ranges file (e.g. a ublk device).
+    #[serde(default)]
+    pub mmap_file: Option<PathBuf>,
     #[serde(default)]
     pub net_fds: Option<Vec<RestoredNetConfig>>,
     #[serde(default)]
@@ -2672,12 +2676,13 @@ pub struct RestoreConfig {
 
 impl RestoreConfig {
     pub const SYNTAX: &'static str = "Restore from a VM snapshot. \
-        \nRestore parameters \"source_url=<source_url>,prefault=on|off,memory_restore_mode=copy|ondemand|mmap,\
+        \nRestore parameters \"source_url=<source_url>,prefault=on|off,memory_restore_mode=copy|ondemand|mmap,mmap_file=<filepath>,\
         net_fds=<list_of_net_ids_with_their_associated_fds>,resume=true|false\" \
         \n`source_url` should be a valid URL (e.g file:///foo/bar or tcp://192.168.1.10/foo) \
         \n`prefault` controls eager prefaulting for the copy-based restore path (disabled by default) \
         \n`memory_restore_mode=copy` preserves the existing eager read-copy restore behavior, while `memory_restore_mode=ondemand` enables lazy demand paging and fails restore if userfaultfd support is unavailable \
         \n`memory_restore_mode=mmap` maps the snapshot file directly with MAP_PRIVATE for page cache sharing across VMs \
+        \n`mmap_file` when using mmap mode, specifies the file to mmap from instead of the snapshot's memory-ranges file \
         \n`net_fds` is a list of net ids with new file descriptors. \
         Only net devices backed by FDs directly are needed as input.\
         \n `resume` controls whether the VM will be directly resumed after restore ";
@@ -2688,6 +2693,7 @@ impl RestoreConfig {
             .add("source_url")
             .add("prefault")
             .add("memory_restore_mode")
+            .add("mmap_file")
             .add("net_fds")
             .add("resume");
         parser.parse(restore).map_err(Error::ParseRestore)?;
@@ -2705,6 +2711,7 @@ impl RestoreConfig {
             .convert::<MemoryRestoreMode>("memory_restore_mode")
             .map_err(Error::ParseRestore)?
             .unwrap_or_default();
+        let mmap_file = parser.get("mmap_file").map(PathBuf::from);
         let net_fds = parser
             .convert::<Tuple<String, Vec<u64>>>("net_fds")
             .map_err(Error::ParseRestore)?
@@ -2727,6 +2734,7 @@ impl RestoreConfig {
             source_url,
             prefault,
             memory_restore_mode,
+            mmap_file,
             net_fds,
             resume,
         })
@@ -4703,6 +4711,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
                 source_url: PathBuf::from("/path/to/snapshot"),
                 prefault: false,
                 memory_restore_mode: MemoryRestoreMode::Copy,
+                mmap_file: None,
                 net_fds: None,
                 resume: false,
             }
@@ -4715,6 +4724,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
                 source_url: PathBuf::from("/path/to/snapshot"),
                 prefault: false,
                 memory_restore_mode: MemoryRestoreMode::Copy,
+                mmap_file: None,
                 net_fds: Some(vec![
                     RestoredNetConfig {
                         id: "net0".to_string(),
@@ -4736,6 +4746,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
                 source_url: PathBuf::from("/path/to/snapshot"),
                 prefault: false,
                 memory_restore_mode: MemoryRestoreMode::OnDemand,
+                mmap_file: None,
                 net_fds: None,
                 resume: false,
             }
@@ -4746,6 +4757,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
                 source_url: PathBuf::from("/path/to/snapshot"),
                 prefault: false,
                 memory_restore_mode: MemoryRestoreMode::Copy,
+                mmap_file: None,
                 net_fds: None,
                 resume: true,
             }
@@ -4837,6 +4849,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
             source_url: PathBuf::from("/path/to/snapshot"),
             prefault: false,
             memory_restore_mode: MemoryRestoreMode::Copy,
+            mmap_file: None,
             net_fds: Some(vec![
                 RestoredNetConfig {
                     id: "net0".to_string(),
@@ -4913,6 +4926,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
             source_url: PathBuf::from("/path/to/snapshot"),
             prefault: false,
             memory_restore_mode: MemoryRestoreMode::Copy,
+            mmap_file: None,
             net_fds: None,
             resume: false,
         };
@@ -4927,6 +4941,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
             source_url: PathBuf::from("/path/to/snapshot"),
             prefault: true,
             memory_restore_mode: MemoryRestoreMode::OnDemand,
+            mmap_file: None,
             net_fds: None,
             resume: false,
         };

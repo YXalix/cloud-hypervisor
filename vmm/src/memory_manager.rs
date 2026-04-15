@@ -1012,7 +1012,7 @@ impl MemoryManager {
     /// - On-demand loading: filemap_fault loads pages from the file on first access
     fn mmap_saved_regions(
         &mut self,
-        file_path: PathBuf,
+        file_path: &PathBuf,
         saved_regions: &MemoryRangeTable,
     ) -> Result<(), Error> {
         if saved_regions.is_empty() {
@@ -1021,7 +1021,7 @@ impl MemoryManager {
 
         let file = OpenOptions::new()
             .read(true)
-            .open(&file_path)
+            .open(file_path)
             .map_err(Error::SnapshotOpen)?;
 
         let guest_memory = self.guest_memory.memory();
@@ -1762,6 +1762,7 @@ impl MemoryManager {
         source_url: Option<&str>,
         prefault: bool,
         memory_restore_mode: MemoryRestoreMode,
+        mmap_file: Option<PathBuf>,
         phys_bits: u8,
         exit_evt: &EventFd,
     ) -> Result<Arc<Mutex<MemoryManager>>, Error> {
@@ -1790,9 +1791,10 @@ impl MemoryManager {
                     exit_evt,
                 )?;
             } else if memory_restore_mode == MemoryRestoreMode::Mmap {
+                let file_path = mmap_file.unwrap_or(memory_file_path);
                 mm.lock()
                     .unwrap()
-                    .mmap_saved_regions(memory_file_path, &mem_snapshot.memory_ranges)?;
+                    .mmap_saved_regions(&file_path, &mem_snapshot.memory_ranges)?;
             } else {
                 mm.lock()
                     .unwrap()

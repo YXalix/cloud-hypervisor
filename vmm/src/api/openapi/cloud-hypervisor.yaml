@@ -1364,6 +1364,9 @@ components:
           type: boolean
         memory_restore_mode:
           $ref: "#/components/schemas/MemoryRestoreMode"
+        mmap_file:
+          type: string
+          description: When memory_restore_mode is Mmap, specifies the file to mmap from instead of the snapshot memory-ranges file
         resume:
           type: boolean
 
